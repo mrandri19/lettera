@@ -1,0 +1,11 @@
+[package]
+name = "lettera"
+version = "0.1.0"
+authors = ["Andrea Cognolato <andrecogno@hotmail.it>"]
+edition = "2018"
+
+[dependencies]
+gl = { path = "lib/gl" }
+glutin = "0.21"
+font-kit = "0.4.0"
+euclid = "0.20.1"
