@@ -13,15 +13,16 @@ impl Texture {
             gl::TextureParameteri(id, gl::TEXTURE_MIN_FILTER, gl::NEAREST as GLint);
             gl::TextureParameteri(id, gl::TEXTURE_MAG_FILTER, gl::NEAREST as GLint);
 
-            gl::TextureStorage2D(id, 1, gl::RGB8, width as GLsizei, height as GLsizei);
             gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
+
+            gl::TextureStorage2D(id, 1, gl::RGB8, width, height);
             gl::TextureSubImage2D(
                 id,
                 0,                 // level
                 0,                 // x
                 0,                 // y
-                width as GLsizei,  // width
-                height as GLsizei, // height
+                width,  // width
+                height, // height
                 gl::RGB,           // format
                 gl::UNSIGNED_BYTE, // type
                 pixels.as_ptr() as *const GLvoid,

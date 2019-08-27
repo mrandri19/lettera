@@ -42,6 +42,8 @@ pub extern "system" fn callback(
         _ => _severity = "UNKNOWN",
     }
 
+    if _severity=="NOTIFICATION" { return;}
+
     let msg = unsafe { CStr::from_ptr(message) };
     println!(
         "{}: {} of {} severity, raised from {}: {}",

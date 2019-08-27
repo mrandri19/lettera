@@ -12,13 +12,7 @@
 
 use gl::types::*;
 
-use euclid::Point2D;
-use font_kit::canvas::{Canvas, Format, RasterizationOptions};
-use font_kit::family_name::FamilyName;
-use font_kit::hinting::HintingOptions;
-use font_kit::loader::FontTransform;
-use font_kit::properties::Properties;
-use font_kit::source::SystemSource;
+use freetype::Library;
 
 mod debug_message_callback;
 mod program;
@@ -33,42 +27,15 @@ use vertex::Vertex;
 
 fn rasterize_glyph(
     glyph_id: u32,
-    font: &font_kit::font::Font,
-    logical_pixel_size: u32,
+    face: &freetype::face::Face,
 ) -> (u32, u32, Vec<u8>) {
-    // Assuming 96 dpi. 1pt = 1px @ 72dpi => 1pt = 1.33px
-    let size = logical_pixel_size as f32 * 3. / 4.;
+    face.load_glyph(glyph_id, freetype::face::LoadFlag::DEFAULT).unwrap();
+    let glyph = face.glyph();
+    glyph.render_glyph(freetype::render_mode::RenderMode::Lcd).unwrap();
+    let bitmap = glyph.bitmap();
+    // TODO: terrible loop to remove padding/pitch
 
-    let raster_rect = font
-        .raster_bounds(
-            glyph_id,
-            size,
-            &FontTransform::identity(),
-            &Point2D::zero(),
-            HintingOptions::VerticalSubpixel(size),
-            RasterizationOptions::SubpixelAa,
-        )
-        .unwrap();
-
-    let mut canvas = Canvas::new(&raster_rect.size.to_u32(), Format::Rgb24);
-    let origin = Point2D::new(
-        -raster_rect.origin.x,
-        raster_rect.size.height + raster_rect.origin.y,
-    )
-    .to_f32();
-
-    font.rasterize_glyph(
-        &mut canvas,
-        glyph_id,
-        size,
-        &FontTransform::identity(),
-        &origin,
-        HintingOptions::VerticalSubpixel(size),
-        RasterizationOptions::SubpixelAa,
-    )
-    .unwrap();
-
-    (canvas.size.width, canvas.size.height, canvas.pixels)
+    ((bitmap.width()/3) as u32, bitmap.rows() as u32, bitmap.buffer().to_vec())
 }
 
 fn vertices_for_quad_absolute(
@@ -134,13 +101,13 @@ fn main() {
     program.use_();
 
     // Load font
-    let font = SystemSource::new()
-        .select_best_match(&[FamilyName::Monospace], &Properties::new())
-        .unwrap()
-        .load()
-        .unwrap();
+    let lib = Library::init().unwrap();
+    let face = lib.new_face(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/fonts/FiraCode-Retina.ttf"
+            ), 0).unwrap();
+    face.set_pixel_sizes(128,128).unwrap();
 
-    dbg!(font.metrics());
 
     // Create vao
     let mut vao = 0;
@@ -174,8 +141,8 @@ fn main() {
 
         for (index, character) in "hello".chars().enumerate() {
             // Render a glyph
-            let glyph_id = font.glyph_for_char(character).unwrap();
-            let (width, height, pixels) = rasterize_glyph(glyph_id, &font, 128);
+            let glyph_id = face.get_char_index(character as usize);
+            let (width, height, pixels) = rasterize_glyph(glyph_id, &face);
 
             // Create a new texture holding the glyph
             let glyph_texture = Texture::new(width as GLsizei, height as GLsizei, pixels);
@@ -188,8 +155,8 @@ fn main() {
             vertices.extend(vertices_for_quad_absolute(
                 360 + index as u32 * 100,
                 225,
-                width,
-                height,
+                width as u32,
+                height as u32,
                 window_width,
                 window_height,
             ));
