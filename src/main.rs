@@ -16,26 +16,85 @@ use freetype::Library;
 
 mod debug_message_callback;
 mod program;
+mod rasterize_glyph;
 mod shader;
 mod state;
 mod texture;
 mod vertex;
 
-use state::State;
-use texture::Texture;
-use vertex::Vertex;
+use crate::rasterize_glyph::rasterize_glyph;
+use crate::state::State;
+use crate::texture::Texture;
+use crate::vertex::Vertex;
 
-fn rasterize_glyph(
-    glyph_id: u32,
+fn draw_frame(
     face: &freetype::face::Face,
-) -> (u32, u32, Vec<u8>) {
-    face.load_glyph(glyph_id, freetype::face::LoadFlag::DEFAULT).unwrap();
-    let glyph = face.glyph();
-    glyph.render_glyph(freetype::render_mode::RenderMode::Lcd).unwrap();
-    let bitmap = glyph.bitmap();
-    // TODO: terrible loop to remove padding/pitch
+    vao: GLuint,
+    vbo: GLuint,
+    window_width: u32,
+    window_height: u32,
+) {
+    unsafe {
+        gl::ClearColor(1.0, 1.0, 1.0, 1.0);
+        gl::Clear(gl::COLOR_BUFFER_BIT);
+    }
 
-    ((bitmap.width()/3) as u32, bitmap.rows() as u32, bitmap.buffer().to_vec())
+    let mut pen_position_x = 10;
+    let pen_position_y = 150;
+
+    for character in "gl::Clear(gl::COLOR_BUFFER_BIT);".chars() {
+        let glyph_index = face.get_char_index(character as usize);
+
+        let (glyph_width, glyph_height, glyph_pixels, left_bearing, top_bearing, advance) =
+            rasterize_glyph(glyph_index, &face);
+
+        if character == ' ' {
+            pen_position_x += advance;
+            continue;
+        }
+
+        // Create a new texture holding the glyph
+        let glyph_texture = Texture::new(
+            glyph_width as GLsizei,
+            glyph_height as GLsizei,
+            glyph_pixels,
+        );
+
+        // Bind the texture
+        unsafe { gl::BindTextureUnit(0, glyph_texture.get_id()) };
+
+        let mut vertices: Vec<Vertex> = vec![];
+        vertices.extend(vertices_for_quad_absolute(
+            (pen_position_x + left_bearing) as u32,
+            (pen_position_y - top_bearing) as u32,
+            glyph_width as u32,
+            glyph_height as u32,
+            window_width,
+            window_height,
+        ));
+
+        pen_position_x += advance;
+
+        // Load quads into vbo
+        unsafe {
+            // TODO(optimization): reallocating the buffer every frame is bad,
+            //  or maybe not so much, look more into it when we have benchmarks
+            gl::NamedBufferData(
+                vbo,
+                (vertices.len() * std::mem::size_of::<Vertex>()) as GLsizeiptr,
+                vertices.as_ptr() as *const GLvoid,
+                gl::STATIC_DRAW,
+            )
+        };
+
+        // Setup vao for quad drawing
+        Vertex::vertex_specification(vao, vbo);
+
+        // Draw quads
+        unsafe {
+            gl::DrawArrays(gl::TRIANGLES, 0, vertices.len() as GLsizei);
+        }
+    }
 }
 
 fn vertices_for_quad_absolute(
@@ -59,20 +118,20 @@ fn vertices_for_quad_absolute(
 
     vec![
         // top-left triangle
-        Vertex::new(bottom_left, [1.0, 0.0, 0.0], [0.0, 1.0]),
-        Vertex::new(top_left, [0.0, 1.0, 0.0], [0.0, 0.0]),
-        Vertex::new(top_right, [0.0, 0.0, 1.0], [1.0, 0.0]),
+        Vertex::new(bottom_left, [0.0, 0.0, 0.0], [0.0, 1.0]),
+        Vertex::new(top_left, [0.0, 0.0, 0.0], [0.0, 0.0]),
+        Vertex::new(top_right, [0.0, 0.0, 0.0], [1.0, 0.0]),
         // bottom-right triangle
-        Vertex::new(bottom_left, [1.0, 0.0, 0.0], [0.0, 1.0]),
-        Vertex::new(bottom_right, [1.0, 1.0, 1.0], [1.0, 1.0]),
-        Vertex::new(top_right, [0.0, 0.0, 1.0], [1.0, 0.0]),
+        Vertex::new(bottom_left, [0.0, 0.0, 0.0], [0.0, 1.0]),
+        Vertex::new(bottom_right, [0.0, 0.0, 0.0], [1.0, 1.0]),
+        Vertex::new(top_right, [0.0, 0.0, 0.0], [1.0, 0.0]),
     ]
 }
 
 fn main() {
     // Init glutin
     let mut el = glutin::EventsLoop::new();
-    let wb = glutin::WindowBuilder::new().with_dimensions((1440, 900).into());
+    let wb = glutin::WindowBuilder::new().with_dimensions((750, 200).into());
     let windowed_context = glutin::ContextBuilder::new()
         .build_windowed(wb, &el)
         .unwrap();
@@ -102,12 +161,16 @@ fn main() {
 
     // Load font
     let lib = Library::init().unwrap();
-    let face = lib.new_face(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/fonts/FiraCode-Retina.ttf"
-            ), 0).unwrap();
-    face.set_pixel_sizes(128,128).unwrap();
-
+    lib.set_lcd_filter(freetype::LcdFilter::LcdFilterDefault)
+        .unwrap();
+    let face = lib
+        .new_face(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/fonts/UbuntuMono.ttf"),
+            0,
+        )
+        .unwrap();
+    let size: isize = std::env::args().nth(1).unwrap().parse().unwrap();
+    face.set_char_size(size * 64, 0, 72, 0).unwrap();
 
     // Create vao
     let mut vao = 0;
@@ -115,6 +178,12 @@ fn main() {
 
     // Create texture array
     // TODO
+
+    // Enable blending
+    unsafe { gl::Enable(gl::BLEND) };
+    unsafe {
+        gl::BlendFunc(gl::SRC1_COLOR, gl::ONE_MINUS_SRC1_COLOR);
+    };
 
     // Bind vertex array buffer before drawing
     unsafe { gl::BindVertexArray(vao) };
@@ -134,53 +203,7 @@ fn main() {
         // Get window size
         let (window_width, window_height): (u32, u32) = window.get_inner_size().unwrap().into();
 
-        unsafe {
-            gl::ClearColor(1.0, 0.0, 1.0, 1.0);
-            gl::Clear(gl::COLOR_BUFFER_BIT);
-        }
-
-        for (index, character) in "hello".chars().enumerate() {
-            // Render a glyph
-            let glyph_id = face.get_char_index(character as usize);
-            let (width, height, pixels) = rasterize_glyph(glyph_id, &face);
-
-            // Create a new texture holding the glyph
-            let glyph_texture = Texture::new(width as GLsizei, height as GLsizei, pixels);
-
-            // Bind the texture
-            unsafe { gl::BindTextureUnit(0, glyph_texture.get_id()) };
-
-            // Create quads
-            let mut vertices: Vec<Vertex> = vec![];
-            vertices.extend(vertices_for_quad_absolute(
-                360 + index as u32 * 100,
-                225,
-                width as u32,
-                height as u32,
-                window_width,
-                window_height,
-            ));
-
-            // Load quads into vbo
-            unsafe {
-                // TODO(optimization): reallocating the buffer every frame is bad,
-                //  or maybe not so much, look more into it when we have benchmarks
-                gl::NamedBufferData(
-                    vbo,
-                    (vertices.len() * std::mem::size_of::<Vertex>()) as GLsizeiptr,
-                    vertices.as_ptr() as *const GLvoid,
-                    gl::STATIC_DRAW,
-                )
-            };
-
-            // Setup vao for quad drawing
-            Vertex::vertex_specification(vao, vbo);
-
-            // Draw quads
-            unsafe {
-                gl::DrawArrays(gl::TRIANGLES, 0, vertices.len() as GLsizei);
-            }
-        }
+        draw_frame(&face, vao, vbo, window_width, window_height);
 
         windowed_context.swap_buffers().unwrap();
     }
