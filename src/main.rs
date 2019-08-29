@@ -1,14 +1,11 @@
-// TODO: understand this, but it's  a fucking genious idea.
+// TODO: understand this, but it's a fucking genious idea.
 // the vertex shader becomes more complicated though, it needs some
 // benchmarking
 // https://ourmachinery.com/post/ui-rendering-using-primitive-buffers/
 
-// TODO: finish
-// * we need LCD filtering, either font-kit merges a patch quickly or I'll fork it
-// * find out how to represent a glyph + glyph texture atlasing
+// TODO
 // * find out how to use harfbuzz-rs
-
-// TODO: look at multi draw and glsl subroutines
+// * look at multi draw and glsl subroutines
 
 use gl::types::*;
 
@@ -28,72 +25,78 @@ use crate::texture::Texture;
 use crate::vertex::Vertex;
 
 fn draw_frame(
+    lines: &Vec<String>,
     face: &freetype::face::Face,
     vao: GLuint,
     vbo: GLuint,
     window_width: u32,
     window_height: u32,
+    line_height: u32,
 ) {
     unsafe {
         gl::ClearColor(1.0, 1.0, 1.0, 1.0);
         gl::Clear(gl::COLOR_BUFFER_BIT);
     }
 
-    let mut pen_position_x = 10;
-    let pen_position_y = 150;
+    let mut pen_position_x = 0;
+    let mut pen_position_y = 16;
 
-    for character in "gl::Clear(gl::COLOR_BUFFER_BIT);".chars() {
-        let glyph_index = face.get_char_index(character as usize);
+    for line in lines.iter().take((window_height / line_height) as usize) {
+        for character in line.chars() {
+            let glyph_index = face.get_char_index(character as usize);
 
-        let (glyph_width, glyph_height, glyph_pixels, left_bearing, top_bearing, advance) =
-            rasterize_glyph(glyph_index, &face);
+            let (glyph_width, glyph_height, glyph_pixels, left_bearing, top_bearing, advance) =
+                rasterize_glyph(glyph_index, &face);
 
-        if character == ' ' {
+            if character == ' ' {
+                pen_position_x += advance;
+                continue;
+            }
+
+            // Create a new texture holding the glyph
+            let glyph_texture = Texture::new(
+                glyph_width as GLsizei,
+                glyph_height as GLsizei,
+                glyph_pixels,
+            );
+
+            // Bind the texture
+            unsafe { gl::BindTextureUnit(0, glyph_texture.get_id()) };
+
+            let mut vertices: Vec<Vertex> = vec![];
+            vertices.extend(vertices_for_quad_absolute(
+                std::cmp::max(0, pen_position_x + left_bearing) as u32,
+                std::cmp::max(0, pen_position_y - top_bearing) as u32,
+                glyph_width as u32,
+                glyph_height as u32,
+                window_width,
+                window_height,
+            ));
+
             pen_position_x += advance;
-            continue;
+
+            // Load quads into vbo
+            unsafe {
+                // TODO(optimization): reallocating the buffer every frame is bad,
+                //  or maybe not so much, look more into it when we have benchmarks
+                gl::NamedBufferData(
+                    vbo,
+                    (vertices.len() * std::mem::size_of::<Vertex>()) as GLsizeiptr,
+                    vertices.as_ptr() as *const GLvoid,
+                    gl::STATIC_DRAW,
+                )
+            };
+
+            // Setup vao for quad drawing
+            Vertex::vertex_specification(vao, vbo);
+
+            // Draw quads
+            unsafe {
+                gl::DrawArrays(gl::TRIANGLES, 0, vertices.len() as GLsizei);
+            }
         }
-
-        // Create a new texture holding the glyph
-        let glyph_texture = Texture::new(
-            glyph_width as GLsizei,
-            glyph_height as GLsizei,
-            glyph_pixels,
-        );
-
-        // Bind the texture
-        unsafe { gl::BindTextureUnit(0, glyph_texture.get_id()) };
-
-        let mut vertices: Vec<Vertex> = vec![];
-        vertices.extend(vertices_for_quad_absolute(
-            (pen_position_x + left_bearing) as u32,
-            (pen_position_y - top_bearing) as u32,
-            glyph_width as u32,
-            glyph_height as u32,
-            window_width,
-            window_height,
-        ));
-
-        pen_position_x += advance;
-
-        // Load quads into vbo
-        unsafe {
-            // TODO(optimization): reallocating the buffer every frame is bad,
-            //  or maybe not so much, look more into it when we have benchmarks
-            gl::NamedBufferData(
-                vbo,
-                (vertices.len() * std::mem::size_of::<Vertex>()) as GLsizeiptr,
-                vertices.as_ptr() as *const GLvoid,
-                gl::STATIC_DRAW,
-            )
-        };
-
-        // Setup vao for quad drawing
-        Vertex::vertex_specification(vao, vbo);
-
-        // Draw quads
-        unsafe {
-            gl::DrawArrays(gl::TRIANGLES, 0, vertices.len() as GLsizei);
-        }
+        pen_position_x = 0;
+        pen_position_y += line_height as i32;
     }
 }
 
@@ -160,6 +163,7 @@ fn main() {
     program.use_();
 
     // Load font
+    let size = 16;
     let lib = Library::init().unwrap();
     lib.set_lcd_filter(freetype::LcdFilter::LcdFilterDefault)
         .unwrap();
@@ -169,8 +173,8 @@ fn main() {
             0,
         )
         .unwrap();
-    let size: isize = std::env::args().nth(1).unwrap().parse().unwrap();
     face.set_char_size(size * 64, 0, 72, 0).unwrap();
+    let line_height = size;
 
     // Create vao
     let mut vao = 0;
@@ -184,6 +188,14 @@ fn main() {
     unsafe {
         gl::BlendFunc(gl::SRC1_COLOR, gl::ONE_MINUS_SRC1_COLOR);
     };
+
+    // Read file
+    let file_name = std::env::args().nth(1).unwrap();
+    let lines = std::fs::read_to_string(file_name)
+        .unwrap()
+        .lines()
+        .map(|s| s.to_string())
+        .collect::<Vec<String>>();
 
     // Bind vertex array buffer before drawing
     unsafe { gl::BindVertexArray(vao) };
@@ -203,7 +215,15 @@ fn main() {
         // Get window size
         let (window_width, window_height): (u32, u32) = window.get_inner_size().unwrap().into();
 
-        draw_frame(&face, vao, vbo, window_width, window_height);
+        draw_frame(
+            &lines,
+            &face,
+            vao,
+            vbo,
+            window_width,
+            window_height,
+            line_height as u32,
+        );
 
         windowed_context.swap_buffers().unwrap();
     }
