@@ -30,7 +30,10 @@ use crate::state::State;
 use crate::texture_atlas::TextureAtlas;
 use crate::vertex::{vertices_for_quad_absolute, Vertex};
 
+const MAX_FPS: u64 = 60;
+
 fn draw_frame(
+    state: &State,
     lines: &Vec<String>,
     face: &freetype::face::Face,
     vao: GLuint,
@@ -52,6 +55,7 @@ fn draw_frame(
     let mut vertices: Vec<Vertex> = vec![];
     for line in lines
         .iter()
+        .skip(state.get_position().row)
         .take((window_height / line_height + 1) as usize)
     {
         for character in line.chars() {
@@ -192,7 +196,7 @@ fn main() {
     unsafe { gl::BindVertexArray(vao) };
 
     while state.is_running() {
-        let start = Instant::now();
+        let time = Instant::now();
 
         el.poll_events(|e| state.handle_event(e));
 
@@ -206,6 +210,7 @@ fn main() {
         let (window_width, window_height): (u32, u32) = inner_size.into();
 
         draw_frame(
+            &state,
             &lines,
             &face,
             vao,
@@ -219,11 +224,10 @@ fn main() {
 
         windowed_context.swap_buffers().unwrap();
 
-        let render_duration = start.elapsed();
-        if let Some(duration) = Duration::from_millis(1000 / 60).checked_sub(render_duration) {
+        let render_duration = time.elapsed();
+        if let Some(duration) = Duration::from_millis(1000 / MAX_FPS).checked_sub(render_duration) {
             std::thread::sleep(duration);
         }
-        println!("{:#?}", render_duration);
     }
     unsafe { gl::BindVertexArray(0) };
 
