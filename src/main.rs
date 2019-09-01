@@ -4,17 +4,20 @@
 // https://ourmachinery.com/post/ui-rendering-using-primitive-buffers/
 
 // TODO
-// support hidpi, right now on a 4k screen it renders on the surface as
-// if it was a 1920 screen, or maybe I'm just creating the texture sizes wrong
-
-// TODO
+// * support hidpi, right now on a 4k screen it renders on the surface as
+//   if it was a 1920 screen, or maybe I'm just creating the texture sizes wrong
 // * find out how to use harfbuzz-rs
 // * look at multi draw and glsl subroutines
+// * chekc out https://docs.rs/scribe/0.7.2/scribe/
+// * optimize syntect start time
 
 use gl::types::*;
 
 use freetype::Library;
 use std::time::{Duration, Instant};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{Color, Style, ThemeSet};
+use syntect::parsing::SyntaxSet;
 
 mod debug_message_callback;
 mod face_bbox;
@@ -32,9 +35,18 @@ use crate::vertex::{vertices_for_quad_absolute, Vertex};
 
 const MAX_FPS: u64 = 60;
 
+fn syntect_color_to_slice_color(color: Color) -> [GLfloat; 4] {
+    [
+        color.r as GLfloat / 256.,
+        color.g as GLfloat / 256.,
+        color.b as GLfloat / 256.,
+        color.a as GLfloat / 256.,
+    ]
+}
+
 fn draw_frame(
     state: &State,
-    lines: &Vec<String>,
+    lines: &Vec<Vec<(Style, &str)>>,
     face: &freetype::face::Face,
     vao: GLuint,
     vbo: GLuint,
@@ -44,8 +56,11 @@ fn draw_frame(
     line_height: u32,
     texture_atlas: &mut TextureAtlas,
 ) {
+    // TODO: use syntect's background color
+    let bg_color = [0.153, 0.157, 0.133, 1.0];
+
     unsafe {
-        gl::ClearColor(1.0, 1.0, 1.0, 1.0);
+        gl::ClearColor(bg_color[0], bg_color[1], bg_color[2], bg_color[3]);
         gl::Clear(gl::COLOR_BUFFER_BIT);
     }
 
@@ -53,44 +68,48 @@ fn draw_frame(
     let mut pen_position_y = line_height as i32;
 
     let mut vertices: Vec<Vertex> = vec![];
-    for line in lines
+    for line_ranges in lines
         .iter()
         .skip(state.get_position().row)
         .take((window_height / line_height + 1) as usize)
     {
-        for character in line.chars() {
-            let glyph_index = face.get_char_index(character as usize);
+        for line_range in line_ranges {
+            let (range_style, range_string) = line_range;
+            for character in range_string.chars() {
+                let glyph_index = face.get_char_index(character as usize);
 
-            let (
-                glyph_width,
-                glyph_height,
-                offset,
-                left_bearing,
-                top_bearing,
-                advance,
-                width_texture,
-                height_texture,
-            ) = texture_atlas.get(glyph_index).unwrap_or_else(|| {
-                texture_atlas.insert(glyph_index, rasterize_glyph(glyph_index, &face));
-                texture_atlas.get(glyph_index).unwrap()
-            });
+                let (
+                    glyph_width,
+                    glyph_height,
+                    offset,
+                    left_bearing,
+                    top_bearing,
+                    advance,
+                    width_texture,
+                    height_texture,
+                ) = texture_atlas.get(glyph_index).unwrap_or_else(|| {
+                    texture_atlas.insert(glyph_index, rasterize_glyph(glyph_index, &face));
+                    texture_atlas.get(glyph_index).unwrap()
+                });
 
-            // TODO: just dont' draw quads outside viewport, do culling myself
-            vertices.extend(vertices_for_quad_absolute(
-                std::cmp::max(0, pen_position_x + left_bearing),
-                pen_position_y - top_bearing,
-                glyph_width as u32,
-                glyph_height as u32,
-                window_width,
-                window_height,
-                0.0,
-                0.0,
-                width_texture,
-                height_texture,
-                offset as GLint,
-            ));
+                // TODO: just dont' draw quads outside viewport, do culling myself
+                vertices.extend(vertices_for_quad_absolute(
+                    std::cmp::max(0, pen_position_x + left_bearing),
+                    pen_position_y - top_bearing,
+                    glyph_width as u32,
+                    glyph_height as u32,
+                    window_width,
+                    window_height,
+                    0.0,
+                    0.0,
+                    width_texture,
+                    height_texture,
+                    offset as GLint,
+                    syntect_color_to_slice_color(range_style.foreground),
+                ));
 
-            pen_position_x += advance;
+                pen_position_x += advance;
+            }
         }
         pen_position_x = 0;
         pen_position_y += line_height as i32;
@@ -186,11 +205,17 @@ fn main() {
 
     // Read file
     let file_name = std::env::args().nth(1).unwrap_or("src/main.rs".to_string());
-    let lines = std::fs::read_to_string(file_name)
-        .unwrap()
+    let file_contents = std::fs::read_to_string(&file_name).unwrap();
+
+    // Load syntect and highlight file
+    let ps = SyntaxSet::load_defaults_nonewlines();
+    let ts = ThemeSet::load_defaults();
+    let syntax = ps.find_syntax_for_file(&file_name).unwrap().unwrap();
+    let mut h = HighlightLines::new(syntax, &ts.themes["base16-mocha.dark"]);
+    let lines: Vec<Vec<(Style, &str)>> = file_contents
         .lines()
-        .map(|s| s.to_string())
-        .collect::<Vec<String>>();
+        .map(|line| h.highlight(line, &ps))
+        .collect();
 
     // Bind vertex array buffer before drawing
     unsafe { gl::BindVertexArray(vao) };

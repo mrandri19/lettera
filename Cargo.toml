@@ -8,3 +8,4 @@ edition = "2018"
 gl = { path = "lib/gl" }
 glutin = "0.21.1"
 freetype-rs = "0.21.0"
+syntect = "3.2.1"

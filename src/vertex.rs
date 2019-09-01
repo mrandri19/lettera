@@ -71,6 +71,7 @@ pub fn vertices_for_quad_absolute(
     width_texture: f32,
     height_texture: f32,
     offset: GLint,
+    color: [GLfloat; 4],
 ) -> Vec<Vertex> {
     // Multiplied by two since the OpenGL quadrant goes from -1 to 1 so has length 2
     let x_ss = 2. * x as f32 / window_width as f32;
@@ -83,7 +84,6 @@ pub fn vertices_for_quad_absolute(
     let bottom_left = [-1.0 + x_ss, 1.0 - (y_ss + h_ss)];
     let bottom_right = [-1.0 + x_ss + w_ss, 1.0 - (y_ss + h_ss)];
 
-    let color = [0.0, 0.0, 0.0, 1.0];
     vec![
         // top-left triangle
         Vertex::new(bottom_left, color, [x_texture, height_texture], offset),

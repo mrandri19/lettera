@@ -31,6 +31,16 @@ impl State {
     pub fn get_position(&self) -> Position {
         self.position
     }
+    fn go_down(&mut self, y: f32) {
+        self.position.row = self
+            .position
+            .row
+            .checked_add(3 * (-y) as usize)
+            .unwrap_or(0);
+    }
+    fn go_up(&mut self, y: f32) {
+        self.position.row = self.position.row.checked_sub(3 * y as usize).unwrap_or(0);
+    }
     pub fn handle_event(&mut self, event: glutin::Event) {
         match event {
             Event::WindowEvent { event, .. } => match event {
@@ -46,12 +56,11 @@ impl State {
                 WindowEvent::MouseWheel { delta, phase, .. } => match (delta, phase) {
                     // TODO: support trackpad
                     (MouseScrollDelta::LineDelta(_x, y), TouchPhase::Moved) => {
-                        self.position.row = if y > 0. {
-                            self.position.row.checked_sub(y as usize)
+                        if y > 0. {
+                            self.go_up(y);
                         } else {
-                            self.position.row.checked_add((-y) as usize)
+                            self.go_down(y);
                         }
-                        .unwrap_or(0)
                     }
                     _ => (),
                 },
