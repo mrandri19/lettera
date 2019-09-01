@@ -21,12 +21,12 @@ mod program;
 mod rasterize_glyph;
 mod shader;
 mod state;
-mod texture;
+mod texture_atlas;
 mod vertex;
 
 use crate::rasterize_glyph::rasterize_glyph;
 use crate::state::State;
-use crate::texture::Texture;
+use crate::texture_atlas::TextureAtlas;
 use crate::vertex::Vertex;
 
 fn draw_frame(
@@ -38,7 +38,7 @@ fn draw_frame(
     window_width: u32,
     window_height: u32,
     line_height: u32,
-    texture_atlas: &mut Texture,
+    texture_atlas: &mut TextureAtlas,
 ) {
     unsafe {
         gl::ClearColor(1.0, 1.0, 1.0, 1.0);
@@ -209,7 +209,7 @@ fn main() {
     unsafe { gl::CreateVertexArrays(1, &mut vao) };
 
     // Create texture atlas
-    let mut texture_atlas = Texture::new(
+    let mut texture_atlas = TextureAtlas::new(
         max_face_width_pixels as GLsizei,
         max_face_height_pixels as GLsizei,
         512,

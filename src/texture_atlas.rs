@@ -4,7 +4,7 @@ use std::collections::HashMap;
 type GlyphIndex = u32;
 type GlyphDescription = (u32, u32, usize, i32, i32, i32, f32, f32);
 
-pub struct Texture {
+pub struct TextureAtlas {
     id: GLuint,
     glyph_dimensions: HashMap<GlyphIndex, GlyphDescription>,
     size: usize,
@@ -13,7 +13,7 @@ pub struct Texture {
     height: GLsizei,
 }
 
-impl Texture {
+impl TextureAtlas {
     pub fn new(width: GLsizei, height: GLsizei, capacity: usize) -> Self {
         let mut id = 0;
         unsafe {
@@ -98,7 +98,7 @@ impl Texture {
     }
 }
 
-impl Drop for Texture {
+impl Drop for TextureAtlas {
     fn drop(&mut self) {
         unsafe { gl::DeleteTextures(1, &self.id) };
     }
