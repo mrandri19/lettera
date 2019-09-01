@@ -20,15 +20,11 @@ impl State {
     pub fn should_update_viewport(&self) -> bool {
         self.should_update_viewport
     }
-    pub fn get_logical_size(&self) -> glutin::dpi::LogicalSize {
-        self.logical_size
-    }
     pub fn handle_event(&mut self, event: glutin::Event) {
         match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::Resized(new_logical_size) => {
                     self.should_update_viewport = self.logical_size != new_logical_size;
-
                     self.logical_size = new_logical_size;
                 }
                 WindowEvent::CloseRequested => self.running = false,

@@ -6,5 +6,5 @@ edition = "2018"
 
 [dependencies]
 gl = { path = "lib/gl" }
-glutin = "0.21"
+glutin = "0.21.1"
 freetype-rs = "0.21.0"

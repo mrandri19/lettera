@@ -14,6 +14,7 @@
 use gl::types::*;
 
 use freetype::Library;
+use std::time::{Duration, Instant};
 
 mod debug_message_callback;
 mod face_bbox;
@@ -27,7 +28,7 @@ mod vertex;
 use crate::rasterize_glyph::rasterize_glyph;
 use crate::state::State;
 use crate::texture_atlas::TextureAtlas;
-use crate::vertex::Vertex;
+use crate::vertex::{vertices_for_quad_absolute, Vertex};
 
 fn draw_frame(
     lines: &Vec<String>,
@@ -70,9 +71,10 @@ fn draw_frame(
                 texture_atlas.get(glyph_index).unwrap()
             });
 
+            // TODO: just dont' draw quads outside viewport, do culling myself
             vertices.extend(vertices_for_quad_absolute(
-                std::cmp::max(0, pen_position_x + left_bearing) as u32,
-                std::cmp::max(0, pen_position_y - top_bearing) as u32,
+                std::cmp::max(0, pen_position_x + left_bearing),
+                pen_position_y - top_bearing,
                 glyph_width as u32,
                 glyph_height as u32,
                 window_width,
@@ -108,52 +110,9 @@ fn draw_frame(
     // Bind the texture
     let texture_unit = 0;
     unsafe { gl::BindTextureUnit(texture_unit, texture_atlas.get_id()) };
-    unsafe {
-        let sampler_loc =
-            gl::GetUniformLocation(program, std::ffi::CString::new("tex").unwrap().as_ptr());
-        gl::Uniform1i(sampler_loc, texture_unit as i32);
-    };
+    unsafe { gl::ProgramUniform1i(program, 0, texture_unit as i32) };
 
-    unsafe {
-        gl::DrawArrays(gl::TRIANGLES, 0, vertices.len() as GLsizei);
-    }
-}
-
-fn vertices_for_quad_absolute(
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-    window_width: u32,
-    window_height: u32,
-    x_texture: f32,
-    y_texture: f32,
-    width_texture: f32,
-    height_texture: f32,
-    offset: GLint,
-) -> Vec<Vertex> {
-    // Multiplied by two since the OpenGL quadrant goes from -1 to 1 so has length 2
-    let x_ss = 2. * x as f32 / window_width as f32;
-    let y_ss = 2. * y as f32 / window_height as f32;
-    let w_ss = 2. * width as f32 / window_width as f32;
-    let h_ss = 2. * height as f32 / window_height as f32;
-
-    let top_left = [-1.0 + x_ss, 1.0 - y_ss];
-    let top_right = [-1.0 + x_ss + w_ss, 1.0 - y_ss];
-    let bottom_left = [-1.0 + x_ss, 1.0 - (y_ss + h_ss)];
-    let bottom_right = [-1.0 + x_ss + w_ss, 1.0 - (y_ss + h_ss)];
-
-    let color = [0.0, 0.0, 0.0];
-    vec![
-        // top-left triangle
-        Vertex::new(bottom_left, color, [x_texture, height_texture], offset),
-        Vertex::new(top_left, color, [x_texture, y_texture], offset),
-        Vertex::new(top_right, color, [width_texture, y_texture], offset),
-        // bottom-right triangle
-        Vertex::new(bottom_left, color, [x_texture, height_texture], offset),
-        Vertex::new(bottom_right, color, [width_texture, height_texture], offset),
-        Vertex::new(top_right, color, [width_texture, y_texture], offset),
-    ]
+    unsafe { gl::DrawArrays(gl::TRIANGLES, 0, vertices.len() as GLsizei) };
 }
 
 fn main() {
@@ -194,7 +153,7 @@ fn main() {
         .unwrap();
     let face = lib
         .new_face(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/fonts/UbuntuMono.ttf"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/fonts/FiraCode-Retina.ttf"),
             0,
         )
         .unwrap();
@@ -231,20 +190,20 @@ fn main() {
 
     // Bind vertex array buffer before drawing
     unsafe { gl::BindVertexArray(vao) };
-    // Main loop
+
     while state.is_running() {
+        let start = Instant::now();
+
         el.poll_events(|e| state.handle_event(e));
 
-        // Update viewport on resize
+        let inner_size = window.get_inner_size().unwrap();
         if state.should_update_viewport() {
-            let logical_size = state.get_logical_size();
             let (width, height): (u32, u32) =
-                logical_size.to_physical(window.get_hidpi_factor()).into();
+                inner_size.to_physical(window.get_hidpi_factor()).into();
             unsafe { gl::Viewport(0, 0, width as GLsizei, height as GLsizei) };
         }
 
-        // Get window size
-        let (window_width, window_height): (u32, u32) = window.get_inner_size().unwrap().into();
+        let (window_width, window_height): (u32, u32) = inner_size.into();
 
         draw_frame(
             &lines,
@@ -259,6 +218,12 @@ fn main() {
         );
 
         windowed_context.swap_buffers().unwrap();
+
+        let render_duration = start.elapsed();
+        if let Some(duration) = Duration::from_millis(1000 / 60).checked_sub(render_duration) {
+            std::thread::sleep(duration);
+        }
+        println!("{:#?}", render_duration);
     }
     unsafe { gl::BindVertexArray(0) };
 
