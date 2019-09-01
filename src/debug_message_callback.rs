@@ -56,7 +56,7 @@ pub extern "system" fn callback(
         msg.to_owned().to_string_lossy()
     );
 
-    if _severity != "LOW" {
+    if !(_severity == "LOW" || _severity == "NOTIFICATION") {
         panic!();
     }
 }

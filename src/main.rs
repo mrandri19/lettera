@@ -4,6 +4,10 @@
 // https://ourmachinery.com/post/ui-rendering-using-primitive-buffers/
 
 // TODO
+// support hidpi, right now on a 4k screen it renders on the surface as
+// if it was a 1920 screen, or maybe I'm just creating the texture sizes wrong
+
+// TODO
 // * find out how to use harfbuzz-rs
 // * look at multi draw and glsl subroutines
 
@@ -12,6 +16,7 @@ use gl::types::*;
 use freetype::Library;
 
 mod debug_message_callback;
+mod face_bbox;
 mod program;
 mod rasterize_glyph;
 mod shader;
@@ -29,9 +34,11 @@ fn draw_frame(
     face: &freetype::face::Face,
     vao: GLuint,
     vbo: GLuint,
+    program: GLuint,
     window_width: u32,
     window_height: u32,
     line_height: u32,
+    texture_atlas: &mut Texture,
 ) {
     unsafe {
         gl::ClearColor(1.0, 1.0, 1.0, 1.0);
@@ -39,31 +46,30 @@ fn draw_frame(
     }
 
     let mut pen_position_x = 0;
-    let mut pen_position_y = 16;
+    let mut pen_position_y = line_height as i32;
 
-    for line in lines.iter().take((window_height / line_height) as usize) {
+    let mut vertices: Vec<Vertex> = vec![];
+    for line in lines
+        .iter()
+        .take((window_height / line_height + 1) as usize)
+    {
         for character in line.chars() {
             let glyph_index = face.get_char_index(character as usize);
 
-            let (glyph_width, glyph_height, glyph_pixels, left_bearing, top_bearing, advance) =
-                rasterize_glyph(glyph_index, &face);
+            let (
+                glyph_width,
+                glyph_height,
+                offset,
+                left_bearing,
+                top_bearing,
+                advance,
+                width_texture,
+                height_texture,
+            ) = texture_atlas.get(glyph_index).unwrap_or_else(|| {
+                texture_atlas.insert(glyph_index, rasterize_glyph(glyph_index, &face));
+                texture_atlas.get(glyph_index).unwrap()
+            });
 
-            if character == ' ' {
-                pen_position_x += advance;
-                continue;
-            }
-
-            // Create a new texture holding the glyph
-            let glyph_texture = Texture::new(
-                glyph_width as GLsizei,
-                glyph_height as GLsizei,
-                glyph_pixels,
-            );
-
-            // Bind the texture
-            unsafe { gl::BindTextureUnit(0, glyph_texture.get_id()) };
-
-            let mut vertices: Vec<Vertex> = vec![];
             vertices.extend(vertices_for_quad_absolute(
                 std::cmp::max(0, pen_position_x + left_bearing) as u32,
                 std::cmp::max(0, pen_position_y - top_bearing) as u32,
@@ -71,32 +77,45 @@ fn draw_frame(
                 glyph_height as u32,
                 window_width,
                 window_height,
+                0.0,
+                0.0,
+                width_texture,
+                height_texture,
+                offset as GLint,
             ));
 
             pen_position_x += advance;
-
-            // Load quads into vbo
-            unsafe {
-                // TODO(optimization): reallocating the buffer every frame is bad,
-                //  or maybe not so much, look more into it when we have benchmarks
-                gl::NamedBufferData(
-                    vbo,
-                    (vertices.len() * std::mem::size_of::<Vertex>()) as GLsizeiptr,
-                    vertices.as_ptr() as *const GLvoid,
-                    gl::STATIC_DRAW,
-                )
-            };
-
-            // Setup vao for quad drawing
-            Vertex::vertex_specification(vao, vbo);
-
-            // Draw quads
-            unsafe {
-                gl::DrawArrays(gl::TRIANGLES, 0, vertices.len() as GLsizei);
-            }
         }
         pen_position_x = 0;
         pen_position_y += line_height as i32;
+    }
+
+    // Load quads into vbo
+    unsafe {
+        // TODO(optimization): reallocating the buffer every frame is bad,
+        //  or maybe not so much, look more into it when we have benchmarks
+        gl::NamedBufferData(
+            vbo,
+            (vertices.len() * std::mem::size_of::<Vertex>()) as GLsizeiptr,
+            vertices.as_ptr() as *const GLvoid,
+            gl::STATIC_DRAW,
+        )
+    };
+
+    // Setup vao for quad drawing
+    Vertex::vertex_specification(vao, vbo);
+
+    // Bind the texture
+    let texture_unit = 0;
+    unsafe { gl::BindTextureUnit(texture_unit, texture_atlas.get_id()) };
+    unsafe {
+        let sampler_loc =
+            gl::GetUniformLocation(program, std::ffi::CString::new("tex").unwrap().as_ptr());
+        gl::Uniform1i(sampler_loc, texture_unit as i32);
+    };
+
+    unsafe {
+        gl::DrawArrays(gl::TRIANGLES, 0, vertices.len() as GLsizei);
     }
 }
 
@@ -107,6 +126,11 @@ fn vertices_for_quad_absolute(
     height: u32,
     window_width: u32,
     window_height: u32,
+    x_texture: f32,
+    y_texture: f32,
+    width_texture: f32,
+    height_texture: f32,
+    offset: GLint,
 ) -> Vec<Vertex> {
     // Multiplied by two since the OpenGL quadrant goes from -1 to 1 so has length 2
     let x_ss = 2. * x as f32 / window_width as f32;
@@ -119,15 +143,16 @@ fn vertices_for_quad_absolute(
     let bottom_left = [-1.0 + x_ss, 1.0 - (y_ss + h_ss)];
     let bottom_right = [-1.0 + x_ss + w_ss, 1.0 - (y_ss + h_ss)];
 
+    let color = [0.0, 0.0, 0.0];
     vec![
         // top-left triangle
-        Vertex::new(bottom_left, [0.0, 0.0, 0.0], [0.0, 1.0]),
-        Vertex::new(top_left, [0.0, 0.0, 0.0], [0.0, 0.0]),
-        Vertex::new(top_right, [0.0, 0.0, 0.0], [1.0, 0.0]),
+        Vertex::new(bottom_left, color, [x_texture, height_texture], offset),
+        Vertex::new(top_left, color, [x_texture, y_texture], offset),
+        Vertex::new(top_right, color, [width_texture, y_texture], offset),
         // bottom-right triangle
-        Vertex::new(bottom_left, [0.0, 0.0, 0.0], [0.0, 1.0]),
-        Vertex::new(bottom_right, [0.0, 0.0, 0.0], [1.0, 1.0]),
-        Vertex::new(top_right, [0.0, 0.0, 0.0], [1.0, 0.0]),
+        Vertex::new(bottom_left, color, [x_texture, height_texture], offset),
+        Vertex::new(bottom_right, color, [width_texture, height_texture], offset),
+        Vertex::new(top_right, color, [width_texture, y_texture], offset),
     ]
 }
 
@@ -148,7 +173,7 @@ fn main() {
     // Enable debug outuput
     unsafe {
         gl::Enable(gl::DEBUG_OUTPUT_SYNCHRONOUS);
-        gl::DebugMessageCallback(debug_message_callback::callback, std::ptr::null())
+        gl::DebugMessageCallback(debug_message_callback::callback, std::ptr::null());
     }
 
     // Create state
@@ -174,14 +199,21 @@ fn main() {
         )
         .unwrap();
     face.set_char_size(size * 64, 0, 72, 0).unwrap();
-    let line_height = size;
+    let line_height = (size as f64 * 1.35) as u32;
+
+    // Get face bbox
+    let (max_face_width_pixels, max_face_height_pixels) = face_bbox::face_bbox(&face);
 
     // Create vao
     let mut vao = 0;
     unsafe { gl::CreateVertexArrays(1, &mut vao) };
 
-    // Create texture array
-    // TODO
+    // Create texture atlas
+    let mut texture_atlas = Texture::new(
+        max_face_width_pixels as GLsizei,
+        max_face_height_pixels as GLsizei,
+        512,
+    );
 
     // Enable blending
     unsafe { gl::Enable(gl::BLEND) };
@@ -190,7 +222,7 @@ fn main() {
     };
 
     // Read file
-    let file_name = std::env::args().nth(1).unwrap();
+    let file_name = std::env::args().nth(1).unwrap_or("src/main.rs".to_string());
     let lines = std::fs::read_to_string(file_name)
         .unwrap()
         .lines()
@@ -201,7 +233,6 @@ fn main() {
     unsafe { gl::BindVertexArray(vao) };
     // Main loop
     while state.is_running() {
-        // Handle events
         el.poll_events(|e| state.handle_event(e));
 
         // Update viewport on resize
@@ -220,9 +251,11 @@ fn main() {
             &face,
             vao,
             vbo,
+            program.get_id(),
             window_width,
             window_height,
             line_height as u32,
+            &mut texture_atlas,
         );
 
         windowed_context.swap_buffers().unwrap();
