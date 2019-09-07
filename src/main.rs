@@ -10,14 +10,25 @@
 // * look at multi draw and glsl subroutines
 // * chekc out https://docs.rs/scribe/0.7.2/scribe/
 // * optimize syntect start time
+// * support emoji
 
 use gl::types::*;
 
 use freetype::Library;
-use std::time::{Duration, Instant};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Color, Style, ThemeSet};
 use syntect::parsing::SyntaxSet;
+
+use crate::rasterize_glyph::rasterize_glyph;
+use crate::state::State;
+use crate::texture_atlas::TextureAtlas;
+use crate::vertex::{vertices_for_quad_absolute, Vertex};
+use glutin::event::{Event, WindowEvent};
+use glutin::event_loop::EventLoop;
+use glutin::window::WindowBuilder;
+use glutin::ContextBuilder;
+
+use std::rc::Rc;
 
 mod debug_message_callback;
 mod face_bbox;
@@ -27,13 +38,6 @@ mod shader;
 mod state;
 mod texture_atlas;
 mod vertex;
-
-use crate::rasterize_glyph::rasterize_glyph;
-use crate::state::State;
-use crate::texture_atlas::TextureAtlas;
-use crate::vertex::{vertices_for_quad_absolute, Vertex};
-
-const MAX_FPS: u64 = 60;
 
 fn syntect_color_to_slice_color(color: Color) -> [GLfloat; 4] {
     [
@@ -46,7 +50,7 @@ fn syntect_color_to_slice_color(color: Color) -> [GLfloat; 4] {
 
 fn draw_frame(
     state: &State,
-    lines: &Vec<Vec<(Style, &str)>>,
+    lines: &Vec<Vec<(Style, String)>>,
     face: &freetype::face::Face,
     vao: GLuint,
     vbo: GLuint,
@@ -55,10 +59,8 @@ fn draw_frame(
     window_height: u32,
     line_height: u32,
     texture_atlas: &mut TextureAtlas,
+    bg_color: [GLfloat; 4],
 ) {
-    // TODO: use syntect's background color
-    let bg_color = [0.153, 0.157, 0.133, 1.0];
-
     unsafe {
         gl::ClearColor(bg_color[0], bg_color[1], bg_color[2], bg_color[3]);
         gl::Clear(gl::COLOR_BUFFER_BIT);
@@ -93,20 +95,23 @@ fn draw_frame(
                 });
 
                 // TODO: just dont' draw quads outside viewport, do culling myself
-                vertices.extend(vertices_for_quad_absolute(
-                    std::cmp::max(0, pen_position_x + left_bearing),
-                    pen_position_y - top_bearing,
-                    glyph_width as u32,
-                    glyph_height as u32,
-                    window_width,
-                    window_height,
-                    0.0,
-                    0.0,
-                    width_texture,
-                    height_texture,
-                    offset as GLint,
-                    syntect_color_to_slice_color(range_style.foreground),
-                ));
+                let corrected_y = pen_position_y - top_bearing;
+                if (corrected_y > 0) && (corrected_y < window_height as i32) {
+                    vertices.extend(vertices_for_quad_absolute(
+                        std::cmp::max(0, pen_position_x + left_bearing),
+                        corrected_y,
+                        glyph_width as u32,
+                        glyph_height as u32,
+                        window_width,
+                        window_height,
+                        0.0,
+                        0.0,
+                        width_texture,
+                        height_texture,
+                        offset as GLint,
+                        syntect_color_to_slice_color(range_style.foreground),
+                    ));
+                }
 
                 pen_position_x += advance;
             }
@@ -140,17 +145,13 @@ fn draw_frame(
 
 fn main() {
     // Init glutin
-    let mut el = glutin::EventsLoop::new();
-    let wb = glutin::WindowBuilder::new().with_dimensions((750, 200).into());
-    let windowed_context = glutin::ContextBuilder::new()
-        .build_windowed(wb, &el)
-        .unwrap();
+    let el = EventLoop::new();
+    let wb = WindowBuilder::new();
+    let windowed_context = ContextBuilder::new().build_windowed(wb, &el).unwrap();
     let windowed_context = unsafe { windowed_context.make_current().unwrap() };
-    let window = windowed_context.window();
-    let context = windowed_context.context();
 
     // Load OpenGL
-    gl::load_with(|s| context.get_proc_address(s) as *const _);
+    gl::load_with(|s| windowed_context.context().get_proc_address(s) as *const _);
 
     // Enable debug outuput
     unsafe {
@@ -159,10 +160,10 @@ fn main() {
     }
 
     // Create state
-    let mut state = State::new(window.get_inner_size().unwrap());
+    let mut state = State::new();
 
     // Create vbo
-    let mut vbo: GLuint = 0;
+    let mut vbo = 0;
     unsafe { gl::CreateBuffers(1, &mut vbo) };
 
     // Create and use shader program
@@ -207,57 +208,72 @@ fn main() {
     let file_name = std::env::args().nth(1).unwrap_or("src/main.rs".to_string());
     let file_contents = std::fs::read_to_string(&file_name).unwrap();
 
-    // Load syntect and highlight file
-    let ps = SyntaxSet::load_defaults_nonewlines();
-    let ts = ThemeSet::load_defaults();
-    let syntax = ps.find_syntax_for_file(&file_name).unwrap().unwrap();
-    let mut h = HighlightLines::new(syntax, &ts.themes["base16-mocha.dark"]);
-    let lines: Vec<Vec<(Style, &str)>> = file_contents
-        .lines()
-        .map(|line| h.highlight(line, &ps))
-        .collect();
-
     // Bind vertex array buffer before drawing
     unsafe { gl::BindVertexArray(vao) };
 
-    while state.is_running() {
-        let time = Instant::now();
+    let ps = SyntaxSet::load_defaults_nonewlines();
+    let ts = ThemeSet::load_defaults();
+    let theme = ts.themes["InspiredGitHub"].clone();
+    let syntax = ps.find_syntax_for_file(&file_name).unwrap().unwrap();
+    let mut h = HighlightLines::new(&syntax, &theme);
+    let theme = theme.clone();
+    let bg_color = theme
+        .settings
+        .background
+        .map(syntect_color_to_slice_color)
+        .unwrap_or([0., 0., 0., 1.]);
+    let lines: Vec<Vec<(Style, String)>> = file_contents
+        .lines()
+        .map(|line| h.highlight(&line, &ps))
+        .map(|line| line.iter().map(|s| (s.0, s.1.to_string())).collect())
+        .collect();
+    let lines = Rc::new(lines);
 
-        el.poll_events(|e| state.handle_event(e));
+    el.run(move |event, _, control_flow| {
+        state.handle_event(&event, control_flow);
 
-        let inner_size = window.get_inner_size().unwrap();
-        if state.should_update_viewport() {
-            let (width, height): (u32, u32) =
-                inner_size.to_physical(window.get_hidpi_factor()).into();
-            unsafe { gl::Viewport(0, 0, width as GLsizei, height as GLsizei) };
-        }
+        match event {
+            Event::EventsCleared => windowed_context.window().request_redraw(),
 
-        let (window_width, window_height): (u32, u32) = inner_size.into();
+            Event::LoopDestroyed => {
+                unsafe { gl::BindVertexArray(0) };
+                unsafe { gl::DeleteVertexArrays(1, &vao) };
+                unsafe { gl::DeleteBuffers(1, &vbo) };
+            }
 
-        draw_frame(
-            &state,
-            &lines,
-            &face,
-            vao,
-            vbo,
-            program.get_id(),
-            window_width,
-            window_height,
-            line_height as u32,
-            &mut texture_atlas,
-        );
+            Event::WindowEvent { event, .. } => match event {
+                WindowEvent::Resized(logical_size) => {
+                    let dpi_factor = windowed_context.window().hidpi_factor();
+                    let physical_size = logical_size.to_physical(dpi_factor);
 
-        windowed_context.swap_buffers().unwrap();
+                    windowed_context.resize(physical_size);
 
-        let render_duration = time.elapsed();
-        if let Some(duration) = Duration::from_millis(1000 / MAX_FPS).checked_sub(render_duration) {
-            std::thread::sleep(duration);
-        }
-    }
-    unsafe { gl::BindVertexArray(0) };
+                    let (width, height): (u32, u32) = physical_size.into();
+                    unsafe { gl::Viewport(0, 0, width as GLsizei, height as GLsizei) };
+                }
+                WindowEvent::RedrawRequested => {
+                    let inner_size = windowed_context.window().inner_size();
+                    let (window_width, window_height): (u32, u32) = inner_size.into();
 
-    // Delete vao
-    unsafe { gl::DeleteVertexArrays(1, &vao) };
-    // Delete vbo
-    unsafe { gl::DeleteBuffers(1, &vbo) };
+                    draw_frame(
+                        &state,
+                        &lines,
+                        &face,
+                        vao,
+                        vbo,
+                        program.get_id(),
+                        window_width,
+                        window_height,
+                        line_height as u32,
+                        &mut texture_atlas,
+                        bg_color,
+                    );
+
+                    windowed_context.swap_buffers().unwrap();
+                }
+                _ => (),
+            },
+            _ => (),
+        };
+    });
 }

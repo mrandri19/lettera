@@ -1,4 +1,9 @@
-use glutin::{Event, MouseScrollDelta, TouchPhase, VirtualKeyCode, WindowEvent};
+use glutin::event::KeyboardInput;
+
+use glutin::event::{Event, VirtualKeyCode, WindowEvent};
+use glutin::event::{MouseScrollDelta, TouchPhase};
+
+use glutin::event_loop::ControlFlow;
 
 #[derive(Copy, Debug, Clone)]
 pub struct Position {
@@ -7,26 +12,13 @@ pub struct Position {
 }
 
 pub struct State {
-    running: bool,
-    logical_size: glutin::dpi::LogicalSize,
-    should_update_viewport: bool,
     position: Position,
 }
-
 impl State {
-    pub fn new(initial_size: glutin::dpi::LogicalSize) -> Self {
+    pub fn new() -> Self {
         Self {
-            running: true,
-            logical_size: initial_size,
-            should_update_viewport: false,
             position: Position { row: 0, column: 0 },
         }
-    }
-    pub fn is_running(&self) -> bool {
-        self.running
-    }
-    pub fn should_update_viewport(&self) -> bool {
-        self.should_update_viewport
     }
     pub fn get_position(&self) -> Position {
         self.position
@@ -41,30 +33,38 @@ impl State {
     fn go_up(&mut self, y: f32) {
         self.position.row = self.position.row.checked_sub(3 * y as usize).unwrap_or(0);
     }
-    pub fn handle_event(&mut self, event: glutin::Event) {
+    pub fn handle_event(&mut self, event: &Event<()>, control_flow: &mut ControlFlow) {
         match event {
             Event::WindowEvent { event, .. } => match event {
-                WindowEvent::Resized(new_logical_size) => {
-                    self.should_update_viewport = self.logical_size != new_logical_size;
-                    self.logical_size = new_logical_size;
-                }
-                WindowEvent::CloseRequested => self.running = false,
-                WindowEvent::KeyboardInput { input, .. } => match input.virtual_keycode {
-                    Some(VirtualKeyCode::Escape) => self.running = false,
-                    _ => (),
-                },
-                WindowEvent::MouseWheel { delta, phase, .. } => match (delta, phase) {
-                    // TODO: support trackpad
-                    (MouseScrollDelta::LineDelta(_x, y), TouchPhase::Moved) => {
-                        if y > 0. {
-                            self.go_up(y);
-                        } else {
-                            self.go_down(y);
-                        }
+                WindowEvent::KeyboardInput {
+                    input:
+                        KeyboardInput {
+                            virtual_keycode: Some(virtual_keycode),
+                            state,
+                            ..
+                        },
+                    ..
+                } => match (virtual_keycode, state) {
+                    (VirtualKeyCode::Escape, _) => {
+                        *control_flow = ControlFlow::Exit;
                     }
                     _ => (),
                 },
-                _ => (),
+                WindowEvent::CloseRequested => {
+                    *control_flow = ControlFlow::Exit;
+                }
+                WindowEvent::MouseWheel {
+                    delta: MouseScrollDelta::LineDelta(_x, y),
+                    phase: TouchPhase::Moved,
+                    ..
+                } => {
+                    if y > &0. {
+                        self.go_up(*y);
+                    } else {
+                        self.go_down(*y);
+                    }
+                }
+                _ => *control_flow = ControlFlow::Wait,
             },
             _ => (),
         }
